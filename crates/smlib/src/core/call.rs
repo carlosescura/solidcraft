@@ -37,18 +37,22 @@ pub(crate) fn ops<T>(call: &'static str, f: impl FnOnce() -> solidcore_ops::Resu
     }
     let _span = solidcraft_profile::span("solidcore", call);
     let in_flight = super::dump::in_flight(call);
+    // an older failure's words are not this call's
+    drop(solidcore_ops::session::take_failure_detail());
     let r = match &stop {
         Some(token) => solidcore_ops::cancel::within(token, f),
         None => f(),
     };
     drop(in_flight);
-    r.map_err(|e| error(call, e))
+    r.map_err(|e| error(call, e, solidcore_ops::session::take_failure_detail()))
 }
 
 /// solidcore-ops' error as this crate's: the ones this crate has a kind for as that kind, any
-/// other as [`Error::Solidcore`] with the call's name before it, as a kernel error of a call
-/// this crate runs itself reads.
-pub(crate) fn error(call: &'static str, e: solidcore_ops::Error) -> Error {
+/// other as [`Error::Solidcore`] with the call's name before it. Where the call failed with a
+/// kernel error, the text is the kernel's own statement of it (`detail`,
+/// [`solidcore_ops::session::take_failure_detail`]), exactly as a kernel error of a call this
+/// crate runs itself reads; else it is solidcore-ops' statement of its error.
+pub(crate) fn error(call: &'static str, e: solidcore_ops::Error, detail: Option<String>) -> Error {
     use solidcore_ops::Error as Ops;
     match e {
         Ops::Argument => Error::Argument,
@@ -57,6 +61,9 @@ pub(crate) fn error(call: &'static str, e: solidcore_ops::Error) -> Error {
         Ops::Exception => Error::Exception,
         Ops::Cancelled => Error::Cancelled(call),
         Ops::Internal(what) => Error::Internal(what),
-        e => Error::Solidcore(format!("{call}: {e}")),
+        e => Error::Solidcore(match detail {
+            Some(kernel) => format!("{call}: {kernel}"),
+            None => format!("{call}: {e}"),
+        }),
     }
 }

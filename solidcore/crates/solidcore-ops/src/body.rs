@@ -29,7 +29,7 @@ use solidcore_convert::brep::{to_kernel, to_record, Order, Unsupported};
 use solidcore_record::brep::Brep as Record;
 
 use crate::error::status;
-use crate::session::{measure_body, read_body, run, with_body};
+use crate::session::{measure_body, read_body, read_held, run, with_body};
 use crate::split::copies_of;
 use crate::{Error, Result};
 
@@ -259,12 +259,27 @@ impl Body {
     }
 
     /// A deep copy (`SmApiBrepCopy`): the same topology in the same order, with the attributes
-    /// its entities carry.
+    /// its entities carry. The copy holds what the body holds beside its B-rep, read under the
+    /// lock the copy is made under: the proof that it is valid and faces out, or the template
+    /// it was built from. Both are statements about the B-rep's geometry and topology, which
+    /// the copy has unchanged, so an operation that takes the copy does not prove it again.
     ///
     /// # Errors
     /// Those of the kernel's copy; [`Error::Internal`] for a body a panic left unfinished.
     pub fn copy(&self) -> Result<Body> {
-        read_body("SmApiBrepCopy", self, brep_copy).map(Body::new)
+        let (brep, outward, primitive) = read_held("SmApiBrepCopy", self, |k, held| {
+            Ok(Some((
+                brep_copy(k, held)?,
+                held.0.outward.clone(),
+                held.0.primitive,
+            )))
+        })?
+        .ok_or(Error::Exception)?;
+        Ok(Body(Mutex::new(Held {
+            brep,
+            outward,
+            primitive,
+        })))
     }
 
     /// A deep copy with `order` mapped to the copy's own entity IDs. The ordering of each
